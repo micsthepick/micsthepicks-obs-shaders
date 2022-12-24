@@ -12,7 +12,7 @@ uniform int spill = 10;
 uniform int bias = 0;
 #pragma shaderfilter set luma__min 0
 uniform int luma = 0;
-//uniform int luma_limit = 10;
+#pragma shaderfilter set p__min 1
 uniform float p = 1.5;
 #pragma shaderfilter set mode__min 0
 #pragma shaderfilter set mode__max 3

@@ -73,7 +73,7 @@ float4 render(float2 texCoord) {
 
   float baseMask = chromaDist - similarity * 0.001;
   float fullMask = pow(clamp(baseMask / smoothness * 1000, 0., 1.), p);
-  rgba.a = fullMask;
+  rgba.a *= fullMask;
 
   float spillVal = pow(clamp(baseMask / spill * 1000, 0., 1.), p);
   float desat = clamp(xyz.x, 0., 1.);

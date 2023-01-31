@@ -1,0 +1,258 @@
+// Adapted from https://godotshaders.com/shader/green-screen-chromakey/ by BlueMoon_Coder
+uniform texture2d image<
+	bool automatic = true;
+>;
+
+uniform float4x4 ViewProj<
+	bool automatic = true;
+>;
+
+
+sampler_state builtin_texture_sampler {
+	Filter    = Linear;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
+};
+
+//uniforms
+uniform float3 triplet_key_color<
+	string name = "key color (interpreted)";
+	string field_type = "slider";
+	float3 minimum = {-2., -2., -2.};
+	float3 maximum = {3., 3., 3.};
+	float3 step = {0.001, 0.001, 0.001};
+> = {0., 0., 0.};
+
+uniform float3 triplet_similarity<
+	string name = "similarity";
+	string field_type = "slider";
+	float3 step = {0.001, 0.001, 0.001};
+	float3 minimum = {0.0, 0.0, 0.0};
+	float3 maximum = {4.0, 4.0, 4.0};
+> = {0.75, 0.75, 0.75};
+
+uniform float smoothness<
+	string name = "smoothness";
+	float step = 0.001;
+	float minimum = 0.0;
+	float maximum = 1.0;
+	string field_type = "slider";
+> = 0.008;
+
+uniform float spill<
+	string name = "spill reduction";
+	float step = 0.001;
+	float minimum = 0.0;
+	float maximum = 3.0;
+	string field_type = "slider";
+> = 0;
+
+uniform float3 triplet_strength<
+	string name = "strength";
+	string field_type = "slider";
+	float3 minimum = {0., 0., 0.};
+	float3 maximum = {1., 1., 1.};
+	float3 step = {.005, .005, .005};
+> = {0.5., 0.5., 0.5};
+
+uniform float p<
+	string name = "Power";
+	string field_type = "slider";
+	float minimum = 1.;
+	float maximum =  10.;
+	float step = .01;
+> = 1.5;
+
+uniform int mode<
+	string field_type = "enum";
+	int enum_0 = 0;
+	int enum_1 = 1;
+	int enum_2 = 2;
+	int enum_3 = 3;
+	int enum_4 = 4;
+	int enum_5 = 5;
+	int enum_6 = 6;
+	string enum_0_name = "Off";
+	string enum_1_name = "YUV";
+	string enum_2_name = "YCoCg";
+	string enum_3_name = "YPbPr";
+	string enum_4_name = "GRB greenscreen";
+	string enum_5_name = "BRG bluescreen";
+	string enum_6_name = "YPrPg";
+> = 2;
+
+uniform int color_solo<
+	string field_type = "enum";
+	int enum_0 = 0;
+	int enum_1 = 1;
+	int enum_2 = 2;
+	int enum_3 = 3;
+	string enum_0_name = "Regular";
+	string enum_1_name = "Solo luma";
+	string enum_2_name = "solo component 1";
+	string enum_3_name = "solo component 2";
+> = 0;
+
+uniform int color_channel<
+	string name = "Color channel";
+	string field_type = "enum";
+	int enum_0 = 0;
+	int enum_1 = 1;
+	int enum_2 = 2;
+	int enum_3 = 3;
+	string enum_0_name = "All";
+	string enum_1_name = "luma";
+	string enum_2_name = "component 1";
+	string enum_3_name = "component 2";
+> = 0;
+
+float RGBtoY(float3 c) {
+	return c.r * 0.25 + c.g * 0.5 + c.b * 0.25;
+};
+
+// from wikipedia
+float3 RGB2YCoCg(float3 c) {
+  return float3(
+       RGBtoY(c),
+       c.r * 0.5              + c.b * 0.5 + 0.5,
+      -c.r * 0.25 + c.g * 0.5 - c.b * 0.25 + 0.5
+  );
+};
+
+float3 XYZ2Cust(float3 c) {
+  return float3(
+		RGBtoY(c.yxz),
+		c.x * 0.5 - c.z * 0.5 + 0.5,
+		c.x * 0.5 - c.y * 0.5 + 0.5
+	);
+};
+
+
+float3 XYZ_sum_diff(float3 c) {
+	return float3(c.x, 0.5+0.5*c.y-0.5*c.z, 0.5*c.y+0.5*c.z);
+}
+
+float3 mix(float3 rgbA, float3 rgbB, float frac) {
+	return rgbA + (rgbB - rgbA) * frac;
+};
+
+// same as OBS's Filter
+float3 RGB2YUV(float3 rgb) {
+    return float3(
+    rgb.x *  0.182586 + rgb.y *  0.614231 + rgb.z *  0.062007 + 0.062745,
+    rgb.x *  0.439216 + rgb.y * -0.398942 + rgb.z * -0.040274 + 0.501961,
+    rgb.x * -0.100644 + rgb.y * -0.338572 + rgb.z *  0.439216 + 0.501961
+  );
+};
+
+float RGB2YPbPrY(float3 rgb) {
+    return 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b;
+}
+
+float3 RGB2YPbPr(float3 rgb) {
+    float y = RGB2YPbPrY(rgb);
+    return float3(y, 0.5 + 0.5*(rgb.b - y), 0.5 + 0.5*(rgb.r - y));
+};
+
+
+float3 RGB2YPrPg(float3 rgb) {
+    float y = RGB2YPbPrY(rgb);
+    return float3(y, 0.5 + 0.5*(rgb.r - y), 0.5 + 0.5*(rgb.g - y));
+};
+
+float4 render(float2 texCoord) {
+	float4 rgba = image.Sample(builtin_texture_sampler, texCoord);
+	float3 oldrgb = rgba.rgb;
+	float3 bias = float3(1, 1, 1);
+	if (1 == color_solo) {
+		bias = float3(1, 0, 0);
+	};
+	if (2 == color_solo) {
+		bias = float3(0, 1, 0);
+	};
+	if (3 == color_solo) {
+		bias = float3(0, 0, 1);
+	};
+	float3 xyz = rgba.rgb;
+	float3 diff = bias;
+	if (1 == mode) {
+		xyz = RGB2YUV(xyz);
+		diff *= (xyz - triplet_key_color);
+	}
+	if (2 == mode) {
+		xyz = RGB2YCoCg(xyz);
+		diff *= (xyz - triplet_key_color);
+	}
+	if (3 == mode) {
+		xyz = RGB2YPbPr(xyz);
+		diff *= (xyz - triplet_key_color);
+	}
+	if (4 == mode) {
+		xyz = XYZ2Cust(xyz.grb);
+		diff *= (xyz - triplet_key_color);
+	}
+	if (5 == mode) {
+		xyz = XYZ2Cust(xyz.brg);
+		diff *= (xyz - triplet_key_color);
+	}
+	if (6 == mode) {
+		xyz = RGB2YPrPg(xyz);
+		diff *= (xyz - triplet_key_color);
+	}
+	float3 dist = diff * diff;
+
+	float3 baseMask = dist * triplet_strength - bias * triplet_similarity;
+	
+	float maskVal = (baseMask.x + baseMask.y + baseMask.z + 0.00000001);
+	
+	float fullMask = pow(clamp(maskVal / (smoothness + 0.00000001), 0., 1.), p);
+	rgba.a *= fullMask;
+
+	float spillVal = pow(clamp(maskVal / spill, 0., 1.), p);
+	float desat = clamp(RGBtoY(rgba.rgb), 0., 1.);
+	rgba.rgb = mix(float3(desat, desat, desat), rgba.rgb, spillVal);
+
+	if (0 == mode) {
+		rgba.rgb = oldrgb;
+		rgba.a = 1;
+	};
+	if (1 == color_channel) {
+		rgba.rgb = xyz.xxx;
+		rgba.a = 1;
+	}
+	;
+	if (2 == color_channel) {
+		rgba.rgb = xyz.yyy;
+		rgba.a = 1;
+	};
+	
+	if (3 == color_channel) {
+		rgba.rgb = xyz.zzz;
+		rgba.a = 1;
+	};
+
+	return rgba;
+};
+
+struct VertexInformation {
+	float4 position : POSITION;
+	float4 texcoord0 : TEXCOORD0;
+};
+
+VertexInformation DefaultVertexShader(VertexInformation vtx) {
+	vtx.position = mul(float4(vtx.position.xyz, 1.0), ViewProj);
+	return vtx;
+};
+
+float4 DefaultPixelShader(VertexInformation vtx) : TARGET {
+	return render(vtx.texcoord0.xy);
+};
+
+technique Draw
+{
+	pass
+	{
+		vertex_shader = DefaultVertexShader(vtx);
+		pixel_shader  = DefaultPixelShader(vtx);
+	};
+};
